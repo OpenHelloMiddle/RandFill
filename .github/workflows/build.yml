@@ -1,0 +1,79 @@
+name: Build RandFill
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Build for Linux
+      run: |
+        clang -o randfill-arm64 randfill.c --target=aarch64-linux-gnu
+        clang -o randfill-x64 randfill.c
+
+    - name: Upload Linux x86_64 binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: randfill-linux-x86_64
+        path: randfill-x64
+
+    - name: Upload Linux arm64 binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: randfill-linux-arm64
+        path: randfill-arm64
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+    - name: Build for macOS
+      run: |
+        clang -o randfill-arm64 randfill.c -arch arm64
+        clang -o randfill-x64 randfill.c -arch x86_64
+
+    - name: Upload macOS x86_64 binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: randfill-macos-x86_64
+        path: randfill-x64
+
+    - name: Upload macOS arm64 binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: randfill-macos-arm64
+        path: randfill-arm64
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - name: Set up MSVC x86_64
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: Build for Windows x86_64
+      run: |
+        cl randfill.c /O2 /Fe:randfill-x64.exe
+
+    - name: Set up MSVC arm64
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: arm64
+
+    - name: Build for Windows arm64
+      run: |
+        cl randfill.c /O2 /Fe:randfill-arm64.exe
+
+    - name: Upload Windows x86_64 binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: randfill-windows-x86_64
+        path: randfill-x64.exe
+
+    - name: Upload Windows arm64 binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: randfill-windows-arm64
+        path: randfill-arm64.exe
