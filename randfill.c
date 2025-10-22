@@ -32,11 +32,18 @@ typedef struct {
 
 static void sv_init(strvec *v) { v->items = NULL; v->count = v->cap = 0; }
 static void sv_push(strvec *v, char *s) {
+    if (!s) return;
+
     if (v->count == v->cap) {
         size_t n = v->cap ? v->cap * 2 : 16;
         char **t = realloc(v->items, n * sizeof(char*));
-        if (!t) { perror("realloc"); exit(1); }
-        v->items = t; v->cap = n;
+        if (!t) {
+            perror("realloc");
+            free(s);
+            exit(1);
+        }
+        v->items = t;
+        v->cap = n;
     }
     v->items[v->count++] = s;
 }
@@ -50,28 +57,40 @@ static void sv_free(strvec *v) {
 // For Windows absolute paths like "C:\dir\file" -> "C:"; for UNC \\? treat first component
 static char *top_component(const char *path) {
     if (!path) return NULL;
-    // copy path for tokenizing
-    char *p = strdup(path);
-    if (!p) return NULL;
 #if defined(_WIN32)
-    // If path starts with drive letter "C:\..." return "C:"
-    if (strlen(p) >= 2 && p[1] == ':') {
-        p[2] = '\0';
-        return p;
+    if (strlen(path) >= 2 && path[1] == ':') {
+        char *result = malloc(3);
+        if (!result) return NULL;
+        result[0] = path[0];
+        result[1] = ':';
+        result[2] = '\0';
+        return result;
     }
-    // If begins with "\\", skip leading slashes and take first component
-    char *s = p;
+    const char *s = path;
     while (*s == '\\' || *s == '/') s++;
-    char *sep = strpbrk(s, "\\/");
-    if (sep) *sep = '\0';
-    return s;
+    const char *sep = strpbrk(s, "\\/");
+    if (sep) {
+        size_t len = sep - s;
+        char *result = malloc(len + 1);
+        if (!result) return NULL;
+        memcpy(result, s, len);
+        result[len] = '\0';
+        return result;
+    }
+    return strdup(s);
 #else
-    // For POSIX, strip leading '/', then take first component
-    char *s = p;
+    const char *s = path;
     if (s[0] == '/') s++;
-    char *sep = strchr(s, '/');
-    if (sep) *sep = '\0';
-    return s;
+    const char *sep = strchr(s, '/');
+    if (sep) {
+        size_t len = sep - s;
+        char *result = malloc(len + 1);
+        if (!result) return NULL;
+        memcpy(result, s, len);
+        result[len] = '\0';
+        return result;
+    }
+    return strdup(s);
 #endif
 }
 
@@ -216,16 +235,22 @@ static void collect_files_recursive(const char *root, strvec *out) {
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-        size_t n = strlen(root) + 1 + strlen(ent->d_name) + 2;
+        size_t n = strlen(root) + 1 + strlen(ent->d_name) + 1;
         char *path = malloc(n);
         if (!path) continue;
         snprintf(path, n, "%s/%s", root, ent->d_name);
         struct stat st;
-        if (lstat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (lstat(path, &st) != 0) {
+            free(path);
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
             collect_files_recursive(path, out);
             free(path);
-        } else {
+        } else if (S_ISREG(st.st_mode)) {
             sv_push(out, path);
+        } else {
+            free(path);
         }
     }
     closedir(d);
@@ -234,6 +259,7 @@ static void collect_files_recursive(const char *root, strvec *out) {
 
 // Normalize separators and get a printable path copy
 static char *dup_path(const char *p) {
+    if (!p) return NULL;
     return strdup(p);
 }
 
@@ -250,8 +276,8 @@ static int cmp_paths(const void *a, const void *b) {
     } else {
         r = ci_cmp(pa, pb);
     }
-    free(ka);
-    free(kb);
+    if (ka) free(ka);
+    if (kb) free(kb);
     return r;
 }
 
