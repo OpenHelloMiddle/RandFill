@@ -1,8 +1,3 @@
-// randfill.c
-// Cross-platform tool to overwrite files with strong random bytes.
-// Usage: randfill <path> [<path> ...]
-// Supports directories (recursive) and files. Prints "Corrupting: <path>" then "Done."
-
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,10 +6,10 @@
 #include <inttypes.h>
 #include <errno.h>
 #include <sys/types.h>
-
 #if defined(_WIN32)
 #include <windows.h>
 #include <bcrypt.h>
+#include <libloaderapi.h>
 #pragma comment(lib, "bcrypt")
 #else
 #include <unistd.h>
@@ -23,7 +18,6 @@
 #include <dirent.h>
 #endif
 
-// Simple dynamic array for strings
 typedef struct {
     char **items;
     size_t count;
@@ -33,7 +27,6 @@ typedef struct {
 static void sv_init(strvec *v) { v->items = NULL; v->count = v->cap = 0; }
 static void sv_push(strvec *v, char *s) {
     if (!s) return;
-
     if (v->count == v->cap) {
         size_t n = v->cap ? v->cap * 2 : 16;
         char **t = realloc(v->items, n * sizeof(char*));
@@ -53,8 +46,6 @@ static void sv_free(strvec *v) {
     v->items = NULL; v->count = v->cap = 0;
 }
 
-// Get top-level path component used as sort key
-// For Windows absolute paths like "C:\dir\file" -> "C:"; for UNC \\? treat first component
 static char *top_component(const char *path) {
     if (!path) return NULL;
 #if defined(_WIN32)
@@ -94,7 +85,6 @@ static char *top_component(const char *path) {
 #endif
 }
 
-// Case-insensitive compare for sorting keys
 static int ci_cmp(const char *a, const char *b) {
     for (;; a++, b++) {
         unsigned char ca = (unsigned char)*a;
@@ -106,7 +96,6 @@ static int ci_cmp(const char *a, const char *b) {
     }
 }
 
-// Helper to get file size and whether path is regular file
 static int is_regular_file_and_size(const char *path, uint64_t *size_out) {
 #if defined(_WIN32)
     WIN32_FILE_ATTRIBUTE_DATA fad;
@@ -127,14 +116,12 @@ static int is_regular_file_and_size(const char *path, uint64_t *size_out) {
 }
 
 #if defined(_WIN32)
-// Windows: fill buffer with cryptographic random bytes using BCryptGenRandom
 static int platform_random_bytes(uint8_t *buf, size_t len) {
     if (len == 0) return 1;
     NTSTATUS st = BCryptGenRandom(NULL, buf, (ULONG)len, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
     return (st == 0) ? 1 : 0;
 }
 #else
-// POSIX: read from /dev/random
 static int platform_random_bytes(uint8_t *buf, size_t len) {
     if (len == 0) return 1;
     int fd = open("/dev/random", O_RDONLY);
@@ -154,11 +141,71 @@ static int platform_random_bytes(uint8_t *buf, size_t len) {
 }
 #endif
 
-// Overwrite file with random bytes of same size
+static char *program_self_path = NULL;
+
+static void init_self_path(char **argv) {
+    if (program_self_path) return;
+#if defined(_WIN32)
+    char buf[MAX_PATH];
+    DWORD len = GetModuleFileNameA(NULL, buf, sizeof(buf));
+    if (len > 0 && len < sizeof(buf)) {
+        program_self_path = strdup(buf);
+        if (program_self_path) {
+            for (char *p = program_self_path; *p; p++) {
+                if (*p == '\\') *p = '/';
+            }
+        }
+    }
+#else
+    program_self_path = realpath("/proc/self/exe", NULL);
+    if (!program_self_path && argv && argv[0]) {
+        program_self_path = realpath(argv[0], NULL);
+    }
+#endif
+}
+
+static int is_self_file(const char *path) {
+    if (!program_self_path || !path) return 0;
+    char *normalized_path = strdup(path);
+    if (!normalized_path) return 0;
+    for (char *p = normalized_path; *p; p++) {
+        if (*p == '\\') *p = '/';
+    }
+    int result = (strcmp(normalized_path, program_self_path) == 0);
+    free(normalized_path);
+    return result;
+}
+
+static char *dup_path_display(const char *p) {
+    if (!p) return NULL;
+    char *result = malloc(strlen(p) + 1);
+    if (!result) return NULL;
+    char *dst = result;
+    const char *src = p;
+    int last_was_backslash = 0;
+    while (*src) {
+        if (*src == '\\') {
+            if (!last_was_backslash) {
+                *dst++ = *src;
+            }
+            last_was_backslash = 1;
+        } else {
+            *dst++ = *src;
+            last_was_backslash = 0;
+        }
+        src++;
+    }
+    *dst = '\0';
+    return result;
+}
+
 static int corrupt_file(const char *path) {
     uint64_t size;
     if (!is_regular_file_and_size(path, &size)) return 0;
-    printf("Corrupting: %s\n", path);
+    char *display_path = dup_path_display(path);
+    if (!display_path) return 0;
+    printf("Corrupting: %s\n", display_path);
+    free(display_path);
     if (size == 0) { printf("Done.\n"); return 1; }
 #if defined(_WIN32)
     HANDLE h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -209,7 +256,6 @@ static int corrupt_file(const char *path) {
     return 1;
 }
 
-// Recursively collect files from a directory
 static void collect_files_recursive(const char *root, strvec *out) {
 #if defined(_WIN32)
     WIN32_FIND_DATAA fd;
@@ -222,10 +268,11 @@ static void collect_files_recursive(const char *root, strvec *out) {
         if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
         char path[MAX_PATH];
         snprintf(path, sizeof(path), "%s\\%s", root, name);
+        if (is_self_file(path)) continue;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             collect_files_recursive(path, out);
         } else {
-            sv_push(out, _strdup(path));
+            sv_push(out, strdup(path));
         }
     } while (FindNextFileA(h, &fd));
     FindClose(h);
@@ -239,6 +286,10 @@ static void collect_files_recursive(const char *root, strvec *out) {
         char *path = malloc(n);
         if (!path) continue;
         snprintf(path, n, "%s/%s", root, ent->d_name);
+        if (is_self_file(path)) {
+            free(path);
+            continue;
+        }
         struct stat st;
         if (lstat(path, &st) != 0) {
             free(path);
@@ -257,13 +308,11 @@ static void collect_files_recursive(const char *root, strvec *out) {
 #endif
 }
 
-// Normalize separators and get a printable path copy
 static char *dup_path(const char *p) {
     if (!p) return NULL;
     return strdup(p);
 }
 
-// Compare function using top component then full path
 static int cmp_paths(const void *a, const void *b) {
     const char *pa = *(const char**)a;
     const char *pb = *(const char**)b;
@@ -289,27 +338,28 @@ static void print_help(const char *prog) {
 }
 
 int main(int argc, char **argv) {
+    init_self_path(argv);
     if (argc < 2) { print_help(argv[0]); return 1; }
     for (int i=1;i<argc;i++) {
-        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) { print_help(argv[0]); return 0; }
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) { 
+            print_help(argv[0]); 
+            if (program_self_path) free(program_self_path);
+            return 0; 
+        }
     }
-
     strvec collected;
     sv_init(&collected);
-
-    // For each argument, if it's a directory collect recursively; if file, add directly
     for (int i=1;i<argc;i++) {
         const char *p = argv[i];
 #if defined(_WIN32)
         DWORD attr = GetFileAttributesA(p);
-        if (attr == INVALID_FILE_ATTRIBUTES) {
-            // not existing -> skip silently
-            continue;
-        }
+        if (attr == INVALID_FILE_ATTRIBUTES) continue;
         if (attr & FILE_ATTRIBUTE_DIRECTORY) {
             collect_files_recursive(p, &collected);
         } else {
-            sv_push(&collected, _strdup(p));
+            if (!is_self_file(p)) {
+                sv_push(&collected, strdup(p));
+            }
         }
 #else
         struct stat st;
@@ -317,21 +367,21 @@ int main(int argc, char **argv) {
         if (S_ISDIR(st.st_mode)) {
             collect_files_recursive(p, &collected);
         } else if (S_ISREG(st.st_mode)) {
-            sv_push(&collected, dup_path(p));
+            if (!is_self_file(p)) {
+                sv_push(&collected, dup_path(p));
+            }
         }
 #endif
     }
-
-    if (collected.count == 0) { return 0; }
-
-    // Sort by top component then path
+    if (collected.count == 0) { 
+        if (program_self_path) free(program_self_path);
+        return 0; 
+    }
     qsort(collected.items, collected.count, sizeof(char*), cmp_paths);
-
-    // Process files in order
     for (size_t i=0;i<collected.count;i++) {
         corrupt_file(collected.items[i]);
     }
-
     sv_free(&collected);
+    if (program_self_path) free(program_self_path);
     return 0;
 }
