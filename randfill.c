@@ -10,13 +10,17 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <libloaderapi.h>
+#include <aclapi.h>
 #pragma comment(lib, "bcrypt")
+#pragma comment(lib, "advapi32")
 #else
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <utime.h>
+#include <pwd.h>
+#include <grp.h>
 #endif
 
 typedef struct {
@@ -200,33 +204,117 @@ static char *dup_path_display(const char *p) {
     return result;
 }
 
-static int corrupt_file(const char *path) {
-    uint64_t size;
-    if (!is_regular_file_and_size(path, &size)) {
-        fprintf(stderr, "Error: Cannot access file or not a regular file: %s\n", path);
-        return 0;
-    }
-    char *display_path = dup_path_display(path);
-    if (!display_path) {
-        fprintf(stderr, "Error: Memory allocation failed for path: %s\n", path);
-        return 0;
-    }
-    printf("Corrupting: %s\n", display_path);
-    free(display_path);
-    if (size == 0) { printf("Done.\n"); return 1; }
-
 #if defined(_WIN32)
-    HANDLE h = CreateFileA(path, GENERIC_WRITE | FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) { 
-        fprintf(stderr, "Error: Cannot open file for writing: %s (error %lu)\n", path, GetLastError());
-        return 0; 
+static int uac_elevated = 0;
+static int uac_failed = 0;
+
+static int try_uac_elevation(void) {
+    if (uac_failed) return 0;
+    
+    BOOL is_admin = FALSE;
+    PSID admin_group = NULL;
+    SID_IDENTIFIER_AUTHORITY nt_authority = SECURITY_NT_AUTHORITY;
+    
+    if (AllocateAndInitializeSid(&nt_authority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admin_group)) {
+        if (!CheckTokenMembership(NULL, admin_group, &is_admin)) {
+            is_admin = FALSE;
+        }
+        FreeSid(admin_group);
     }
     
+    if (is_admin) {
+        uac_elevated = 1;
+        return 1;
+    }
+    
+    fprintf(stderr, "Warning: Administrator privileges required for some files. Run as administrator.\n");
+    uac_failed = 1;
+    return 0;
+}
+
+static int backup_and_restore_security_info(const char *path, int (*operation)(const char*, void*), void* context) {
+    PSECURITY_DESCRIPTOR sd = NULL;
+    PACL dacl = NULL;
+    PSID owner = NULL;
+    PSID group = NULL;
+    DWORD res;
+    
+    res = GetNamedSecurityInfoA(path, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, 
+                               &owner, &group, &dacl, NULL, &sd);
+    if (res != ERROR_SUCCESS) {
+        fprintf(stderr, "Warning: Cannot get security info for %s (error %lu)\n", path, res);
+        sd = NULL;
+    }
+    
+    int operation_result = operation(path, context);
+    
+    if (sd) {
+        res = SetNamedSecurityInfoA((char*)path, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                                   owner, group, dacl, NULL);
+        if (res != ERROR_SUCCESS) {
+            fprintf(stderr, "Warning: Cannot restore security info for %s (error %lu)\n", path, res);
+        }
+        LocalFree(sd);
+    }
+    
+    return operation_result;
+}
+
+static int set_full_access(const char *path) {
+    PACL dacl = NULL;
+    PSECURITY_DESCRIPTOR sd = NULL;
+    DWORD res;
+    
+    EXPLICIT_ACCESS ea;
+    ZeroMemory(&ea, sizeof(EXPLICIT_ACCESS));
+    ea.grfAccessPermissions = GENERIC_ALL;
+    ea.grfAccessMode = SET_ACCESS;
+    ea.grfInheritance = NO_INHERITANCE;
+    ea.Trustee.TrusteeForm = TRUSTEE_IS_NAME;
+    ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
+    ea.Trustee.ptstrName = "CURRENT_USER";
+    
+    res = SetEntriesInAclA(1, &ea, NULL, &dacl);
+    if (res != ERROR_SUCCESS) {
+        fprintf(stderr, "Warning: Cannot create DACL for %s (error %lu)\n", path, res);
+        return 0;
+    }
+    
+    res = SetNamedSecurityInfoA((char*)path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, dacl, NULL);
+    if (res != ERROR_SUCCESS) {
+        fprintf(stderr, "Warning: Cannot set DACL for %s (error %lu)\n", path, res);
+        LocalFree(dacl);
+        return 0;
+    }
+    
+    LocalFree(dacl);
+    return 1;
+}
+
+struct win_corrupt_context {
+    uint64_t size;
     FILETIME creation, last_access, last_write;
-    if (!GetFileTime(h, &creation, &last_access, &last_write)) { 
-        fprintf(stderr, "Error: Cannot get file times: %s (error %lu)\n", path, GetLastError());
-        CloseHandle(h); 
-        return 0; 
+};
+
+static int win_corrupt_operation(const char *path, void *context) {
+    struct win_corrupt_context *ctx = (struct win_corrupt_context*)context;
+    
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) { 
+        DWORD err = GetLastError();
+        if (err == ERROR_ACCESS_DENIED && !uac_failed) {
+            if (try_uac_elevation()) {
+                if (!set_full_access(path)) {
+                    fprintf(stderr, "Error: Cannot set full access to file: %s\n", path);
+                    return 0;
+                }
+                h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            }
+        }
+        if (h == INVALID_HANDLE_VALUE) {
+            fprintf(stderr, "Error: Cannot open file for writing: %s (error %lu)\n", path, GetLastError());
+            return 0; 
+        }
     }
     
     LARGE_INTEGER li;
@@ -246,7 +334,7 @@ static int corrupt_file(const char *path) {
     }
     
     int success = 1;
-    uint64_t remain = size;
+    uint64_t remain = ctx->size;
     while (remain > 0) {
         size_t towrite = (remain > CHUNK) ? CHUNK : (size_t)remain;
         if (!platform_random_bytes(buf, towrite)) { 
@@ -265,20 +353,69 @@ static int corrupt_file(const char *path) {
     free(buf);
     
     if (success) {
-        if (!SetFileTime(h, &creation, &last_access, &last_write)) { 
+        if (!SetFileTime(h, &ctx->creation, &ctx->last_access, &ctx->last_write)) { 
             fprintf(stderr, "Warning: Cannot restore file times: %s (error %lu)\n", path, GetLastError());
         }
     }
     CloseHandle(h);
+    
+    return success;
+}
 #else
+static int try_sudo_elevation(void) {
+    fprintf(stderr, "Warning: Root privileges required for some files. Run with sudo.\n");
+    return 0;
+}
+
+static int backup_and_restore_permissions(const char *path, int (*operation)(const char*, void*), void* context) {
     struct stat st;
-    if (stat(path, &st) != 0) { 
-        fprintf(stderr, "Error: Cannot get file info: %s (%s)\n", path, strerror(errno));
-        return 0; 
+    uid_t original_uid = 0;
+    gid_t original_gid = 0;
+    mode_t original_mode = 0;
+    int need_restore = 0;
+    
+    if (stat(path, &st) == 0) {
+        original_uid = st.st_uid;
+        original_gid = st.st_gid;
+        original_mode = st.st_mode;
+        need_restore = 1;
     }
+    
+    int operation_result = operation(path, context);
+    
+    if (need_restore && operation_result) {
+        if (chown(path, original_uid, original_gid) != 0) {
+            fprintf(stderr, "Warning: Cannot restore ownership for %s (%s)\n", path, strerror(errno));
+        }
+        if (chmod(path, original_mode) != 0) {
+            fprintf(stderr, "Warning: Cannot restore permissions for %s (%s)\n", path, strerror(errno));
+        }
+    }
+    
+    return operation_result;
+}
+
+static int set_full_access(const char *path) {
+    if (chmod(path, 0644) != 0) {
+        fprintf(stderr, "Warning: Cannot set permissions for %s (%s)\n", path, strerror(errno));
+        return 0;
+    }
+    return 1;
+}
+
+struct unix_corrupt_context {
+    uint64_t size;
+    struct stat st;
+};
+
+static int unix_corrupt_operation(const char *path, void *context) {
+    struct unix_corrupt_context *ctx = (struct unix_corrupt_context*)context;
     
     int fd = open(path, O_WRONLY);
     if (fd < 0) { 
+        if (errno == EACCES) {
+            try_sudo_elevation();
+        }
         fprintf(stderr, "Error: Cannot open file for writing: %s (%s)\n", path, strerror(errno));
         return 0; 
     }
@@ -297,7 +434,7 @@ static int corrupt_file(const char *path) {
     }
     
     int success = 1;
-    uint64_t remain = size;
+    uint64_t remain = ctx->size;
     while (remain > 0) {
         size_t towrite = (remain > CHUNK) ? CHUNK : (size_t)remain;
         if (!platform_random_bytes(buf, towrite)) { 
@@ -326,14 +463,62 @@ static int corrupt_file(const char *path) {
         close(fd);
         
         struct utimbuf times;
-        times.actime = st.st_atime;
-        times.modtime = st.st_mtime;
+        times.actime = ctx->st.st_atime;
+        times.modtime = ctx->st.st_mtime;
         if (utime(path, &times) != 0) { 
             fprintf(stderr, "Warning: Cannot restore file times: %s (%s)\n", path, strerror(errno));
         }
     } else {
         close(fd);
     }
+    
+    return success;
+}
+#endif
+
+static int corrupt_file(const char *path) {
+    uint64_t size;
+    if (!is_regular_file_and_size(path, &size)) {
+        fprintf(stderr, "Error: Cannot access file or not a regular file: %s\n", path);
+        return 0;
+    }
+    char *display_path = dup_path_display(path);
+    if (!display_path) {
+        fprintf(stderr, "Error: Memory allocation failed for path: %s\n", path);
+        return 0;
+    }
+    printf("Corrupting: %s\n", display_path);
+    free(display_path);
+    if (size == 0) { printf("Done.\n"); return 1; }
+
+#if defined(_WIN32)
+    HANDLE h_time = CreateFileA(path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h_time == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "Error: Cannot open file for time access: %s (error %lu)\n", path, GetLastError());
+        return 0;
+    }
+    
+    FILETIME creation, last_access, last_write;
+    if (!GetFileTime(h_time, &creation, &last_access, &last_write)) {
+        fprintf(stderr, "Error: Cannot get file times: %s (error %lu)\n", path, GetLastError());
+        CloseHandle(h_time);
+        return 0;
+    }
+    CloseHandle(h_time);
+    
+    struct win_corrupt_context ctx = { size, creation, last_access, last_write };
+    
+    int success = backup_and_restore_security_info(path, win_corrupt_operation, &ctx);
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) { 
+        fprintf(stderr, "Error: Cannot get file info: %s (%s)\n", path, strerror(errno));
+        return 0; 
+    }
+    
+    struct unix_corrupt_context ctx = { size, st };
+    
+    int success = backup_and_restore_permissions(path, unix_corrupt_operation, &ctx);
 #endif
     
     if (success) {
