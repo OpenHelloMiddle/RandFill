@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <utime.h>
 #endif
 
 typedef struct {
@@ -201,59 +202,146 @@ static char *dup_path_display(const char *p) {
 
 static int corrupt_file(const char *path) {
     uint64_t size;
-    if (!is_regular_file_and_size(path, &size)) return 0;
+    if (!is_regular_file_and_size(path, &size)) {
+        fprintf(stderr, "Error: Cannot access file or not a regular file: %s\n", path);
+        return 0;
+    }
     char *display_path = dup_path_display(path);
-    if (!display_path) return 0;
+    if (!display_path) {
+        fprintf(stderr, "Error: Memory allocation failed for path: %s\n", path);
+        return 0;
+    }
     printf("Corrupting: %s\n", display_path);
     free(display_path);
     if (size == 0) { printf("Done.\n"); return 1; }
+
 #if defined(_WIN32)
-    HANDLE h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) { perror("CreateFile"); return 0; }
+    HANDLE h = CreateFileA(path, GENERIC_WRITE | FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) { 
+        fprintf(stderr, "Error: Cannot open file for writing: %s (error %lu)\n", path, GetLastError());
+        return 0; 
+    }
+    
+    FILETIME creation, last_access, last_write;
+    if (!GetFileTime(h, &creation, &last_access, &last_write)) { 
+        fprintf(stderr, "Error: Cannot get file times: %s (error %lu)\n", path, GetLastError());
+        CloseHandle(h); 
+        return 0; 
+    }
+    
     LARGE_INTEGER li;
     li.QuadPart = 0;
-    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) { CloseHandle(h); perror("SetFilePointerEx"); return 0; }
+    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) { 
+        fprintf(stderr, "Error: Cannot seek to file beginning: %s (error %lu)\n", path, GetLastError());
+        CloseHandle(h); 
+        return 0; 
+    }
+    
     const size_t CHUNK = 64 * 1024;
     uint8_t *buf = malloc(CHUNK);
-    if (!buf) { CloseHandle(h); return 0; }
+    if (!buf) { 
+        fprintf(stderr, "Error: Memory allocation failed for buffer: %s\n", path);
+        CloseHandle(h); 
+        return 0; 
+    }
+    
+    int success = 1;
     uint64_t remain = size;
-    while (remain) {
+    while (remain > 0) {
         size_t towrite = (remain > CHUNK) ? CHUNK : (size_t)remain;
-        if (!platform_random_bytes(buf, towrite)) { free(buf); CloseHandle(h); return 0; }
+        if (!platform_random_bytes(buf, towrite)) { 
+            fprintf(stderr, "Error: Cannot generate random data: %s\n", path);
+            success = 0;
+            break;
+        }
         DWORD written = 0;
-        if (!WriteFile(h, buf, (DWORD)towrite, &written, NULL) || written != towrite) { free(buf); CloseHandle(h); return 0; }
+        if (!WriteFile(h, buf, (DWORD)towrite, &written, NULL) || written != towrite) { 
+            fprintf(stderr, "Error: Cannot write to file: %s (error %lu)\n", path, GetLastError());
+            success = 0;
+            break;
+        }
         remain -= towrite;
     }
     free(buf);
+    
+    if (success) {
+        if (!SetFileTime(h, &creation, &last_access, &last_write)) { 
+            fprintf(stderr, "Warning: Cannot restore file times: %s (error %lu)\n", path, GetLastError());
+        }
+    }
     CloseHandle(h);
 #else
+    struct stat st;
+    if (stat(path, &st) != 0) { 
+        fprintf(stderr, "Error: Cannot get file info: %s (%s)\n", path, strerror(errno));
+        return 0; 
+    }
+    
     int fd = open(path, O_WRONLY);
-    if (fd < 0) { perror("open"); return 0; }
-    if (lseek(fd, 0, SEEK_SET) == (off_t)-1) { close(fd); perror("lseek"); return 0; }
+    if (fd < 0) { 
+        fprintf(stderr, "Error: Cannot open file for writing: %s (%s)\n", path, strerror(errno));
+        return 0; 
+    }
+    if (lseek(fd, 0, SEEK_SET) == (off_t)-1) { 
+        fprintf(stderr, "Error: Cannot seek to file beginning: %s (%s)\n", path, strerror(errno));
+        close(fd); 
+        return 0; 
+    }
+    
     const size_t CHUNK = 64 * 1024;
     uint8_t *buf = malloc(CHUNK);
-    if (!buf) { close(fd); return 0; }
+    if (!buf) { 
+        fprintf(stderr, "Error: Memory allocation failed for buffer: %s\n", path);
+        close(fd); 
+        return 0; 
+    }
+    
+    int success = 1;
     uint64_t remain = size;
-    while (remain) {
+    while (remain > 0) {
         size_t towrite = (remain > CHUNK) ? CHUNK : (size_t)remain;
-        if (!platform_random_bytes(buf, towrite)) { free(buf); close(fd); return 0; }
+        if (!platform_random_bytes(buf, towrite)) { 
+            fprintf(stderr, "Error: Cannot generate random data: %s\n", path);
+            success = 0;
+            break;
+        }
         size_t off = 0;
         while (off < towrite) {
             ssize_t w = write(fd, buf + off, towrite - off);
             if (w <= 0) {
                 if (errno == EINTR) continue;
-                free(buf); close(fd); return 0;
+                fprintf(stderr, "Error: Cannot write to file: %s (%s)\n", path, strerror(errno));
+                success = 0;
+                break;
             }
             off += (size_t)w;
         }
+        if (!success) break;
         remain -= towrite;
     }
     free(buf);
-    fsync(fd);
-    close(fd);
+    
+    if (success) {
+        fsync(fd);
+        close(fd);
+        
+        struct utimbuf times;
+        times.actime = st.st_atime;
+        times.modtime = st.st_mtime;
+        if (utime(path, &times) != 0) { 
+            fprintf(stderr, "Warning: Cannot restore file times: %s (%s)\n", path, strerror(errno));
+        }
+    } else {
+        close(fd);
+    }
 #endif
-    printf("Done.\n");
-    return 1;
+    
+    if (success) {
+        printf("Done.\n");
+    } else {
+        fprintf(stderr, "Failed to corrupt file: %s\n", path);
+    }
+    return success;
 }
 
 static void collect_files_recursive(const char *root, strvec *out) {
@@ -378,10 +466,22 @@ int main(int argc, char **argv) {
         return 0; 
     }
     qsort(collected.items, collected.count, sizeof(char*), cmp_paths);
+    
+    int success_count = 0;
+    int fail_count = 0;
+    
     for (size_t i=0;i<collected.count;i++) {
-        corrupt_file(collected.items[i]);
+        if (corrupt_file(collected.items[i])) {
+            success_count++;
+        } else {
+            fail_count++;
+        }
     }
+    
     sv_free(&collected);
     if (program_self_path) free(program_self_path);
-    return 0;
+    
+    printf("\nSummary: %d files processed successfully, %d files failed\n", success_count, fail_count);
+    
+    return fail_count > 0 ? 1 : 0;
 }
