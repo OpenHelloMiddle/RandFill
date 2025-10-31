@@ -41,6 +41,12 @@
 #include <pwd.h>
 #include <grp.h>
 #endif
+#ifndef VERSION_NAME
+#define VERSION_NAME "0.0.0"
+#endif
+#ifndef VERSION_CODE
+#define VERSION_CODE 0
+#endif
 
 typedef struct {
     char **items;
@@ -577,18 +583,27 @@ static int cmp_paths(const void *a, const void *b) {
 static void print_help(const char *prog) {
     printf("Usage: %s <file_or_dir> [<file_or_dir> ...]\n", prog);
     printf("Overwrite each target file with strong random bytes (reads from /dev/random on Unix, system RNG on Windows).\n");
-    printf("If a directory is given it will be processed recursively.\n");
     printf("Options:\n  -h, --help    Show this help message\n");
+    printf("  -a, --about    About this program\n");
+}
+
+static void print_about() {
+    printf("RandFill %s(%d)", VERSION_NAME, VERSION_CODE);
+    printf("\nOverwrite each target file with strong random bytes (reads from /dev/random on Unix, system RNG on Windows).\n");
 }
 
 int main(int argc, char **argv) {
     init_self_path(argv);
     if (argc < 2) { print_help(argv[0]); return 1; }
     for (int i=1;i<argc;i++) {
-        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) { 
-            print_help(argv[0]); 
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_help(argv[0]);
             if (program_self_path) free(program_self_path);
-            return 0; 
+            return 0;
+        } else if (strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "--about") == 0) {
+            print_about();
+            if (program_self_path) free(program_self_path);
+            return 0;
         }
     }
     strvec collected;

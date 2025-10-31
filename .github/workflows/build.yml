@@ -18,7 +18,7 @@ jobs:
 
     - name: Build for Linux
       run: |
-        clang -o randfill-x64 randfill.c
+        clang -DVERSION_NAME="\"$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")\"" -DVERSION_CODE=$(git rev-list --count HEAD 2>/dev/null || echo 0) -o randfill-x64 randfill.c
 
     - name: Upload Linux x86_64 binary
       uses: actions/upload-artifact@v4
@@ -39,8 +39,8 @@ jobs:
 
     - name: Build for macOS
       run: |
-        clang -o randfill-arm64 randfill.c -arch arm64
-        clang -o randfill-x64 randfill.c -arch x86_64
+        clang -DVERSION_NAME="\"$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")\"" -DVERSION_CODE=$(git rev-list --count HEAD 2>/dev/null || echo 0) -o randfill-arm64 randfill.c -arch arm64
+        clang -DVERSION_NAME="\"$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")\"" -DVERSION_CODE=$(git rev-list --count HEAD 2>/dev/null || echo 0) -o randfill-x64 randfill.c -arch x86_64
 
     - name: Upload macOS x86_64 binary
       uses: actions/upload-artifact@v4
@@ -73,7 +73,7 @@ jobs:
     - name: Build for Windows x86_64
       run: |
         rc randfill.rc
-        cl randfill.c randfill.res /O2 /Fe:randfill-x64.exe
+        cl -DVERSION_NAME="\"$(git describe --tags --abbrev=0 2>nul || echo 0.0.0)\"" -DVERSION_CODE=$(git rev-list --count HEAD 2>nul || echo 0) randfill.c randfill.res /O2 /Fe:randfill-x64.exe
 
     - name: Upload Windows x86_64 binary
       uses: actions/upload-artifact@v4
