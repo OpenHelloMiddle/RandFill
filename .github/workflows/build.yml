@@ -73,7 +73,9 @@ jobs:
     - name: Build for Windows x86_64
       run: |
         rc randfill.rc
-        cl -DVERSION_NAME="\"$(git describe --tags --abbrev=0 2>nul || echo 0.0.0)\"" -DVERSION_CODE=$(git rev-list --count HEAD 2>nul || echo 0) randfill.c randfill.res /O2 /Fe:randfill-x64.exe
+        for /f "tokens=*" %i in ('git describe --tags --abbrev=0 2^>nul ^|^| echo 0.0.0') do set VERSION_NAME=%i
+        for /f "tokens=*" %i in ('git rev-list --count HEAD 2^>nul ^|^| echo 0') do set VERSION_CODE=%i
+        cl /DVERSION_NAME="%VERSION_NAME%" /DVERSION_CODE=%VERSION_CODE% randfill.c randfill.res /O2 /Fe:randfill-x64.exe
 
     - name: Upload Windows x86_64 binary
       uses: actions/upload-artifact@v4
