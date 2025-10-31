@@ -71,6 +71,7 @@ jobs:
         arch: x64
 
     - name: Build for Windows x86_64
+      shell: cmd
       run: |
         rc randfill.rc
         for /f "tokens=*" %i in ('git describe --tags --abbrev=0 2^>nul ^|^| echo 0.0.0') do set VERSION_NAME=%i
