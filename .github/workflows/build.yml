@@ -71,12 +71,11 @@ jobs:
         arch: x64
 
     - name: Build for Windows x86_64
-      shell: cmd
       run: |
         rc randfill.rc
-        for /f "tokens=*" %i in ('git describe --tags --abbrev=0 2^>nul ^|^| echo 0.0.0') do set VERSION_NAME=%i
-        for /f "tokens=*" %i in ('git rev-list --count HEAD 2^>nul ^|^| echo 0') do set VERSION_CODE=%i
-        cl /DVERSION_NAME="%VERSION_NAME%" /DVERSION_CODE=%VERSION_CODE% randfill.c randfill.res /O2 /Fe:randfill-x64.exe
+        $verName = (git describe --tags --abbrev=0 2>$null) ?? "0.0.0"
+        $verCode = (git rev-list --count HEAD 2>$null) ?? "0"
+        cl "/DVERSION_NAME=`"$verName`"" "/DVERSION_CODE=$verCode" randfill.c randfill.res /O2 /Fe:randfill-x64.exe
 
     - name: Upload Windows x86_64 binary
       uses: actions/upload-artifact@v4
