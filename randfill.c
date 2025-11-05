@@ -40,6 +40,7 @@
 #include <utime.h>
 #include <pwd.h>
 #include <grp.h>
+#include <pthread.h>
 #endif
 #ifndef VERSION_NAME
 #define VERSION_NAME "0.0.0"
@@ -311,7 +312,6 @@ static int win_corrupt_operation(const char *path, void *context) {
         }
         if (h == INVALID_HANDLE_VALUE) {
             fprintf(stderr, "Error: Cannot open file for writing: %s (error %lu)\n", path, GetLastError());
-            // 恢复原始属性
             SetFileAttributesA(path, ctx->original_attributes);
             return 0;
         }
@@ -361,7 +361,6 @@ static int win_corrupt_operation(const char *path, void *context) {
     }
     CloseHandle(h);
 
-    // 恢复原始文件属性
     if (!SetFileAttributesA(path, ctx->original_attributes)) {
         fprintf(stderr, "Warning: Cannot restore file attributes: %s (error %lu)\n", path, GetLastError());
     }
@@ -488,7 +487,7 @@ static int corrupt_file(const char *path) {
     }
     printf("Processing: %s\n", display_path);
     free(display_path);
-    if (size == 0) { printf("Done.\n"); return 1; }
+    if (size == 0) { printf("Done: %s\n", path); return 1; }
 
     #if defined(_WIN32)
     HANDLE h_time = CreateFileA(path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -521,7 +520,7 @@ static int corrupt_file(const char *path) {
     #endif
 
     if (success) {
-        printf("Done.\n");
+        printf("Done: %s\n", path);
     } else {
         fprintf(stderr, "Failed to process file: %s\n", path);
     }
@@ -544,7 +543,6 @@ static void collect_files_recursive(const char *root, strvec *out) {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             collect_files_recursive(path, out);
         } else {
-            // 修复：检查是否为常规文件
             if (!(fd.dwFileAttributes & (FILE_ATTRIBUTE_DEVICE | FILE_ATTRIBUTE_REPARSE_POINT))) {
                 sv_push(out, strdup(path));
             }
@@ -617,6 +615,100 @@ static void print_about() {
     printf("\nOverwrite each target file with strong random bytes (reads from /dev/random on Unix, system RNG on Windows).\n");
 }
 
+#if defined(_WIN32)
+#include <process.h>
+typedef HANDLE thread_t;
+typedef CRITICAL_SECTION mutex_t;
+typedef CONDITION_VARIABLE cond_t;
+#define THREAD_RETURN unsigned __stdcall
+#define THREAD_CALL __stdcall
+static int mutex_init(mutex_t *m) { InitializeCriticalSection(m); return 0; }
+static void mutex_lock(mutex_t *m) { EnterCriticalSection(m); }
+static void mutex_unlock(mutex_t *m) { LeaveCriticalSection(m); }
+static void mutex_destroy(mutex_t *m) { DeleteCriticalSection(m); }
+static int cond_init(cond_t *c) { InitializeConditionVariable(c); return 0; }
+static void cond_signal(cond_t *c) { WakeConditionVariable(c); }
+static void cond_broadcast(cond_t *c) { WakeAllConditionVariable(c); }
+static int cond_wait(cond_t *c, mutex_t *m) { return SleepConditionVariableCS(c, m, INFINITE) ? 0 : -1; }
+static void cond_destroy(cond_t *c) { (void)c; }
+static int thread_create(thread_t *t, void (*func)(void*), void *arg) {
+    *t = (HANDLE)_beginthreadex(NULL, 0, func, arg, 0, NULL);
+    return *t != NULL ? 0 : -1;
+}
+static int thread_join(thread_t t) { return WaitForSingleObject(t, INFINITE) == WAIT_OBJECT_0 ? 0 : -1; }
+static void thread_detach(thread_t t) { CloseHandle(t); }
+#else
+typedef pthread_t thread_t;
+typedef pthread_mutex_t mutex_t;
+typedef pthread_cond_t cond_t;
+#define THREAD_RETURN void*
+#define THREAD_CALL
+static int mutex_init(mutex_t *m) { return pthread_mutex_init(m, NULL); }
+static void mutex_lock(mutex_t *m) { pthread_mutex_lock(m); }
+static void mutex_unlock(mutex_t *m) { pthread_mutex_unlock(m); }
+static void mutex_destroy(mutex_t *m) { pthread_mutex_destroy(m); }
+static int cond_init(cond_t *c) { return pthread_cond_init(c, NULL); }
+static void cond_signal(cond_t *c) { pthread_cond_signal(c); }
+static void cond_broadcast(cond_t *c) { pthread_cond_broadcast(c); }
+static int cond_wait(cond_t *c, mutex_t *m) { return pthread_cond_wait(c, m); }
+static void cond_destroy(cond_t *c) { pthread_cond_destroy(c); }
+static int thread_create(thread_t *t, THREAD_RETURN (THREAD_CALL *func)(void*), void *arg) {
+    return pthread_create(t, NULL, func, arg);
+}
+static int thread_join(thread_t t) { return pthread_join(t, NULL); }
+static void thread_detach(thread_t t) { pthread_detach(t); }
+#endif
+
+typedef struct {
+    strvec *files;
+    size_t next_index;
+    mutex_t mutex;
+    cond_t cond;
+    int active_threads;
+    int success_count;
+    int fail_count;
+    int should_exit;
+} thread_pool_t;
+
+static THREAD_RETURN THREAD_CALL worker_thread(void *arg) {
+    thread_pool_t *pool = (thread_pool_t*)arg;
+    while (1) {
+        mutex_lock(&pool->mutex);
+        while (pool->next_index >= pool->files->count && !pool->should_exit) {
+            cond_wait(&pool->cond, &pool->mutex);
+        }
+        if (pool->should_exit) {
+            pool->active_threads--;
+            cond_broadcast(&pool->cond);
+            mutex_unlock(&pool->mutex);
+            break;
+        }
+        size_t index = pool->next_index++;
+        char *path = pool->files->items[index];
+        mutex_unlock(&pool->mutex);
+
+        if (corrupt_file(path)) {
+            mutex_lock(&pool->mutex);
+            pool->success_count++;
+            mutex_unlock(&pool->mutex);
+        } else {
+            mutex_lock(&pool->mutex);
+            pool->fail_count++;
+            mutex_unlock(&pool->mutex);
+        }
+
+        mutex_lock(&pool->mutex);
+        if (pool->next_index >= pool->files->count) {
+            pool->active_threads--;
+            cond_broadcast(&pool->cond);
+            mutex_unlock(&pool->mutex);
+            break;
+        }
+        mutex_unlock(&pool->mutex);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     init_self_path(argv);
     if (argc < 2) {
@@ -679,21 +771,54 @@ int main(int argc, char **argv) {
 
     qsort(collected.items, collected.count, sizeof(char*), cmp_paths);
 
-    int success_count = 0;
-    int fail_count = 0;
+    thread_pool_t pool;
+    pool.files = &collected;
+    pool.next_index = 0;
+    pool.active_threads = 0;
+    pool.success_count = 0;
+    pool.fail_count = 0;
+    pool.should_exit = 0;
+    mutex_init(&pool.mutex);
+    cond_init(&pool.cond);
 
-    for (size_t i=0;i<collected.count;i++) {
-        if (corrupt_file(collected.items[i])) {
-            success_count++;
-        } else {
-            fail_count++;
-        }
+    size_t max_threads = collected.count < 128 ? collected.count : 128;
+    thread_t *threads = malloc(max_threads * sizeof(thread_t));
+    if (!threads) {
+        fprintf(stderr, "Error: Memory allocation failed for threads\n");
+        sv_free(&collected);
+        if (program_self_path) free(program_self_path);
+        return 1;
     }
 
+    mutex_lock(&pool.mutex);
+    for (size_t i = 0; i < max_threads; i++) {
+        if (thread_create(&threads[i], worker_thread, &pool) != 0) {
+            fprintf(stderr, "Error: Failed to create thread\n");
+            pool.should_exit = 1;
+            break;
+        }
+        pool.active_threads++;
+        thread_detach(threads[i]);
+    }
+    mutex_unlock(&pool.mutex);
+
+    cond_broadcast(&pool.cond);
+
+    mutex_lock(&pool.mutex);
+    while (pool.active_threads > 0) {
+        cond_wait(&pool.cond, &pool.mutex);
+    }
+    pool.should_exit = 1;
+    cond_broadcast(&pool.cond);
+    mutex_unlock(&pool.mutex);
+
+    free(threads);
+    mutex_destroy(&pool.mutex);
+    cond_destroy(&pool.cond);
     sv_free(&collected);
     if (program_self_path) free(program_self_path);
 
-    printf("\nSummary: %d files processed successfully, %d files failed\n", success_count, fail_count);
+    printf("\nSummary: %d files processed successfully, %d files failed\n", pool.success_count, pool.fail_count);
 
-    return fail_count > 0 ? 1 : 0;
+    return pool.fail_count > 0 ? 1 : 0;
 }
