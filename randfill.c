@@ -616,11 +616,12 @@ static void print_about() {
 }
 
 #if defined(_WIN32)
+#include <windows.h>
 #include <process.h>
 typedef HANDLE thread_t;
 typedef CRITICAL_SECTION mutex_t;
 typedef CONDITION_VARIABLE cond_t;
-#define THREAD_RETURN unsigned __stdcall
+#define THREAD_RETURN unsigned
 #define THREAD_CALL __stdcall
 static int mutex_init(mutex_t *m) { InitializeCriticalSection(m); return 0; }
 static void mutex_lock(mutex_t *m) { EnterCriticalSection(m); }
@@ -631,9 +632,12 @@ static void cond_signal(cond_t *c) { WakeConditionVariable(c); }
 static void cond_broadcast(cond_t *c) { WakeAllConditionVariable(c); }
 static int cond_wait(cond_t *c, mutex_t *m) { return SleepConditionVariableCS(c, m, INFINITE) ? 0 : -1; }
 static void cond_destroy(cond_t *c) { (void)c; }
-static int thread_create(thread_t *t, void (*func)(void*), void *arg) {
-    *t = (HANDLE)_beginthreadex(NULL, 0, func, arg, 0, NULL);
-    return *t != NULL ? 0 : -1;
+static int thread_create(thread_t *t, THREAD_RETURN (THREAD_CALL *func)(void*), void *arg) {
+    unsigned threadId;
+    HANDLE h = (HANDLE)_beginthreadex(NULL, 0, func, arg, 0, &threadId);
+    if (h == NULL) return -1;
+    *t = h;
+    return 0;
 }
 static int thread_join(thread_t t) { return WaitForSingleObject(t, INFINITE) == WAIT_OBJECT_0 ? 0 : -1; }
 static void thread_detach(thread_t t) { CloseHandle(t); }
@@ -706,7 +710,11 @@ static THREAD_RETURN THREAD_CALL worker_thread(void *arg) {
         }
         mutex_unlock(&pool->mutex);
     }
-    return 0;
+#if defined(_WIN32)
+    return 0u;
+#else
+    return NULL;
+#endif
 }
 
 int main(int argc, char **argv) {
