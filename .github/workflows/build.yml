@@ -18,7 +18,7 @@ jobs:
 
     - name: Build for Linux
       run: |
-        clang -o randfill-x64 randfill.c
+        clang -DVERSION_NAME="\"$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")\"" -DVERSION_CODE=$(git rev-list --count HEAD 2>/dev/null || echo 0) -o randfill-x64 randfill.c
 
     - name: Upload Linux x86_64 binary
       uses: actions/upload-artifact@v4
@@ -39,8 +39,8 @@ jobs:
 
     - name: Build for macOS
       run: |
-        clang -o randfill-arm64 randfill.c -arch arm64
-        clang -o randfill-x64 randfill.c -arch x86_64
+        clang -DVERSION_NAME="\"$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")\"" -DVERSION_CODE=$(git rev-list --count HEAD 2>/dev/null || echo 0) -o randfill-arm64 randfill.c -arch arm64
+        clang -DVERSION_NAME="\"$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")\"" -DVERSION_CODE=$(git rev-list --count HEAD 2>/dev/null || echo 0) -o randfill-x64 randfill.c -arch x86_64
 
     - name: Upload macOS x86_64 binary
       uses: actions/upload-artifact@v4
@@ -72,7 +72,12 @@ jobs:
 
     - name: Build for Windows x86_64
       run: |
-        cl randfill.c /O2 /Fe:randfill-x64.exe
+        rc randfill.rc
+        $verName = (git describe --tags --abbrev=0 2>$null) ?? "0.0.0"
+        $verCode = (git rev-list --count HEAD 2>$null) ?? "0"
+        cl "/DVERSION_NAME=`"$verName`"" "/DVERSION_CODE=$verCode" randfill.c randfill.res /O2 /Fe:randfill-x64.exe
+        [IO.File]::WriteAllBytes(".\codesign.pfx",[Convert]::FromBase64String("${{ secrets.PFX_BASE64 }}"))
+        signtool sign /f .\codesign.pfx /p "${{ secrets.PFX_PASSWORD }}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 randfill-x64.exe
 
     - name: Upload Windows x86_64 binary
       uses: actions/upload-artifact@v4
