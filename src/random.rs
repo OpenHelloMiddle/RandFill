@@ -42,6 +42,7 @@ pub fn fill_random_bytes(buf: &mut [u8], source: RandomSource) -> Result<()> {
         use windows_sys::Win32::Security::Cryptography::{
             BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
         };
+        // SAFETY: `buf` is valid, mutable, and lives long enough. Null provider is safe with `BCRYPT_USE_SYSTEM_PREFERRED_RNG`.
         let status = unsafe {
             BCryptGenRandom(
                 std::ptr::null_mut(),

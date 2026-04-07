@@ -58,6 +58,7 @@ pub fn backup_metadata(path: &Path) -> Result<FileMetadata> {
        is_readonly: {
            use std::os::windows::ffi::OsStrExt;
            let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+           // SAFETY: `wide` is a valid null-terminated UTF-16 string. `GetFileAttributesW` only reads it.
            let attrs = unsafe { GetFileAttributesW(wide.as_ptr()) };
            attrs != 0xFFFFFFFF && (attrs & FILE_ATTRIBUTE_READONLY) != 0
        },
@@ -76,6 +77,7 @@ fn ensure_writable(path: &Path, meta: &FileMetadata) -> Result<()> {
 fn ensure_writable(path: &Path, meta: &FileMetadata) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: `wide` is valid and null-terminated. Pointer outlives both calls.
     let attrs = unsafe { GetFileAttributesW(wide.as_ptr()) };
     if attrs == 0xFFFFFFFF {
         return Err(anyhow::anyhow!("Failed to get file attributes"));
@@ -113,6 +115,7 @@ pub fn restore_metadata(path: &Path, meta: &FileMetadata) -> Result<()> {
     {
         use std::os::windows::ffi::OsStrExt;
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: `wide` is valid. `attrs` is safely masked before being passed back.
         let mut attrs = unsafe { GetFileAttributesW(wide.as_ptr()) };
         if attrs != 0xFFFFFFFF {
             if meta.is_readonly {
