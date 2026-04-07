@@ -1,8 +1,28 @@
 # RandFill
-该程序用于填充随机数据到文件/文件夹中
+Overwrite files with cryptographically secure random data
 
-## Usage
-./randfill <file_or_dir> [<file_or_dir> ...]
+```
+Usage: randfill [OPTIONS] <TARGETS>...
 
-## tips
-可编译部分其他架构，ci和release不包含的原因是因为懒的改workflow
+Arguments:
+  <TARGETS>...  
+
+Options:
+  -t, --threads <THREADS>  [default: 0]
+  -v, --verbose            
+      --urandom            
+  -h, --help               Print help
+  -V, --version            Print version
+```
+
+## Build
+
+```shell
+cargo build --release
+```
+
+## Download
+
+No way.
+
+Get ample food and clothing by working with our own hands.
