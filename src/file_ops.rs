@@ -4,13 +4,15 @@
  */
 use anyhow::{Context, Result};
 use std::{
-    fs::{OpenOptions, Permissions},
+    fs::OpenOptions,
     io::{Write, Seek, SeekFrom},
     path::Path,
     time::SystemTime,
 };
 #[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, MetadataExt};
+#[cfg(unix)]
+use std::fs::Permissions;
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_READONLY,
@@ -75,6 +77,7 @@ fn ensure_writable(path: &Path, meta: &FileMetadata) -> Result<()> {
 
 #[cfg(windows)]
 fn ensure_writable(path: &Path, meta: &FileMetadata) -> Result<()> {
+    let _ = meta;
     use std::os::windows::ffi::OsStrExt;
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     // SAFETY: `wide` is valid and null-terminated. Pointer outlives both calls.

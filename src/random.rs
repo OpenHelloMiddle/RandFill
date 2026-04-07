@@ -2,7 +2,9 @@
  * Copyright (C) 2026 OpenHelloMiddle Contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(unix)]
+use anyhow::Context;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RandomSource {
@@ -39,6 +41,7 @@ pub fn fill_random_bytes(buf: &mut [u8], source: RandomSource) -> Result<()> {
 
     #[cfg(windows)]
     {
+        let _ = source;
         use windows_sys::Win32::Security::Cryptography::{
             BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
         };
