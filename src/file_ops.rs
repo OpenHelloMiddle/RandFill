@@ -85,11 +85,10 @@ fn ensure_writable(path: &Path, meta: &FileMetadata) -> Result<()> {
     if attrs == 0xFFFFFFFF {
         return Err(anyhow::anyhow!("Failed to get file attributes"));
     }
-    if (attrs & FILE_ATTRIBUTE_READONLY) != 0 {
-        if unsafe { SetFileAttributesW(wide.as_ptr(), attrs & !FILE_ATTRIBUTE_READONLY) } == 0 {
+    if (attrs & FILE_ATTRIBUTE_READONLY) != 0
+        && unsafe { SetFileAttributesW(wide.as_ptr(), attrs & !FILE_ATTRIBUTE_READONLY) } == 0 {
             return Err(anyhow::anyhow!("Failed to clear readonly attribute (requires admin privileges)"));
         }
-    }
     Ok(())
 }
 
