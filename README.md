@@ -24,3 +24,5 @@ cargo build --release
 ## Download
 
 You can go to [GitHub Actions](https://github.com/OpenHelloMiddle/RandFill/actions/workflows/ci.yml?query=branch%3Amain) to download the latest CI build
+
+or [Releases](https://github.com/OpenHelloMiddle/RandFill/releases) for stable build
