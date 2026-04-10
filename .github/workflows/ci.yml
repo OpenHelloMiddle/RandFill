@@ -39,7 +39,7 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --all-targets --all-features --workspace --target ${{ matrix.target }}
+          cargo build --release --all-targets --all-features --workspace --target ${{ matrix.target }}
 
       - name: Upload release
         uses: actions/upload-artifact@v7
