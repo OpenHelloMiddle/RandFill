@@ -23,6 +23,4 @@ cargo build --release
 
 ## Download
 
-No way.
-
-Get ample food and clothing by working with our own hands.
+You can go to [GitHub Actions](https://github.com/OpenHelloMiddle/RandFill/actions/workflows/ci.yml?query=branch%3Amain) to download the latest CI build
