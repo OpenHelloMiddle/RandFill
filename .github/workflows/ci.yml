@@ -48,8 +48,8 @@ jobs:
       - name: Build
         if: matrix.os == 'windows-latest'
         run: |
-          rc randfill.rc
-          cargo rustc --release --target ${{ matrix.target }} --bin randfill -- -C link-arg=/INPUT:randfill.res
+          rc /fo randfill.res randfill.rc
+          cargo rustc --release --target ${{ matrix.target }} --bin randfill -- -C link-arg=randfill.res
 
       - name: Build
         if: matrix.os != 'windows-latest'
