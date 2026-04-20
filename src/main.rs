@@ -28,9 +28,13 @@ struct Args {
 
     #[arg(long, default_value_t = false)]
     urandom: bool,
+
+    #[arg(long, default_value_t = false, help = "Run without fill")]
+    dry_run: bool,
 }
 
 fn process_file(path: &Path, verbose: bool, random_source: RandomSource) -> Result<()> {
+    let args = Args::parse();
     if verbose { println!("Processing: {}", path.display()); }
 
     let meta = std::fs::metadata(path)
@@ -42,8 +46,10 @@ fn process_file(path: &Path, verbose: bool, random_source: RandomSource) -> Resu
         return Ok(());
     }
 
-    file_ops::overwrite_with_random(path, size, random_source)
-        .with_context(|| format!("Failed to overwrite {}", path.display()))?;
+    if !args.dry_run {
+        file_ops::overwrite_with_random(path, size, random_source)
+            .with_context(|| format!("Failed to overwrite {}", path.display()))?;
+    }
 
     if verbose { println!("Successful {}", path.display()); }
     Ok(())
@@ -51,6 +57,7 @@ fn process_file(path: &Path, verbose: bool, random_source: RandomSource) -> Resu
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args.dry_run { println!("[DRY RUN] !Randfill is running in dry run mode") }
     let random_source = if args.urandom { RandomSource::Urandom } else { RandomSource::Random };
 
     let mut files = Vec::new();
