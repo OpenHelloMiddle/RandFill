@@ -33,8 +33,7 @@ struct Args {
     dry_run: bool,
 }
 
-fn process_file(path: &Path, verbose: bool, random_source: RandomSource) -> Result<()> {
-    let args = Args::parse();
+fn process_file(path: &Path, verbose: bool, random_source: RandomSource, dry_run: bool) -> Result<()> {
     if verbose { println!("Processing: {}", path.display()); }
 
     let meta = std::fs::metadata(path)
@@ -46,7 +45,7 @@ fn process_file(path: &Path, verbose: bool, random_source: RandomSource) -> Resu
         return Ok(());
     }
 
-    if !args.dry_run {
+    if !dry_run {
         file_ops::overwrite_with_random(path, size, random_source)
             .with_context(|| format!("Failed to overwrite {}", path.display()))?;
     }
@@ -93,7 +92,7 @@ fn main() -> Result<()> {
     let errors = std::sync::Mutex::new(Vec::<(PathBuf, String)>::new());
 
     files.par_iter().for_each(|path| {
-        let res = process_file(path, args.verbose, random_source);
+        let res = process_file(path, args.verbose, random_source, args.dry_run);
         let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
 
         if let Err(e) = res {
