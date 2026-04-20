@@ -28,9 +28,12 @@ struct Args {
 
     #[arg(long, default_value_t = false)]
     urandom: bool,
+
+    #[arg(long, default_value_t = false, help = "Simulate operation without writing data")]
+    dry_run: bool,
 }
 
-fn process_file(path: &Path, verbose: bool, random_source: RandomSource) -> Result<()> {
+fn process_file(path: &Path, verbose: bool, random_source: RandomSource, dry_run: bool) -> Result<()> {
     if verbose { println!("Processing: {}", path.display()); }
 
     let meta = std::fs::metadata(path)
@@ -42,8 +45,10 @@ fn process_file(path: &Path, verbose: bool, random_source: RandomSource) -> Resu
         return Ok(());
     }
 
-    file_ops::overwrite_with_random(path, size, random_source)
-        .with_context(|| format!("Failed to overwrite {}", path.display()))?;
+    if !dry_run {
+        file_ops::overwrite_with_random(path, size, random_source)
+            .with_context(|| format!("Failed to overwrite {}", path.display()))?;
+    }
 
     if verbose { println!("Successful {}", path.display()); }
     Ok(())
@@ -51,6 +56,7 @@ fn process_file(path: &Path, verbose: bool, random_source: RandomSource) -> Resu
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args.dry_run { eprintln!("[!] DRY-RUN MODE: No data will be written.") }
     let random_source = if args.urandom { RandomSource::Urandom } else { RandomSource::Random };
 
     let mut files = Vec::new();
@@ -86,7 +92,7 @@ fn main() -> Result<()> {
     let errors = std::sync::Mutex::new(Vec::<(PathBuf, String)>::new());
 
     files.par_iter().for_each(|path| {
-        let res = process_file(path, args.verbose, random_source);
+        let res = process_file(path, args.verbose, random_source, args.dry_run);
         let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
 
         if let Err(e) = res {

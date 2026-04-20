@@ -11,6 +11,7 @@ Options:
   -t, --threads <THREADS>  [default: 0]
   -v, --verbose            
       --urandom            
+      --dry-run            Simulate operation without writing data
   -h, --help               Print help
   -V, --version            Print version
 ```
