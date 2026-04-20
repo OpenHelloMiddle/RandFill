@@ -29,7 +29,7 @@ struct Args {
     #[arg(long, default_value_t = false)]
     urandom: bool,
 
-    #[arg(long, default_value_t = false, help = "Run without fill")]
+    #[arg(long, default_value_t = false, help = "Simulate operation without writing data")]
     dry_run: bool,
 }
 
