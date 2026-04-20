@@ -56,7 +56,7 @@ fn process_file(path: &Path, verbose: bool, random_source: RandomSource, dry_run
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    if args.dry_run { println!("[DRY RUN] !Randfill is running in dry run mode") }
+    if args.dry_run { println!("[!] DRY-RUN MODE: No data will be written.") }
     let random_source = if args.urandom { RandomSource::Urandom } else { RandomSource::Random };
 
     let mut files = Vec::new();
