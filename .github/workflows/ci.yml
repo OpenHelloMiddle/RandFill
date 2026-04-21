@@ -43,13 +43,6 @@ jobs:
           cache-all-crates: "true"
 
       - name: Build
-        if: matrix.os == 'windows-latest'
-        run: |
-          rc /fo randfill.res randfill.rc
-          cargo rustc --release --target ${{ matrix.target }} --bin randfill -- -C link-arg=randfill.res
-
-      - name: Build
-        if: matrix.os != 'windows-latest'
         run: |
           cargo build --release --all-targets --all-features --workspace --target ${{ matrix.target }}
 
