@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use rayon::prelude::*;
+use indicatif::{ProgressBar, ProgressStyle};
 
 mod random;
 mod file_ops;
@@ -87,36 +88,47 @@ fn main() -> Result<()> {
 
     println!("Processing {} files with {} threads...", files.len(), threads);
 
-    let processed = AtomicUsize::new(0);
     let failed = AtomicUsize::new(0);
     let errors = std::sync::Mutex::new(Vec::<(PathBuf, String)>::new());
 
+    let pb = if args.verbose {
+        None
+    } else {
+        let bar = ProgressBar::new(files.len() as u64);
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] [{bar:40}] {pos}/{len} ({eta}) {msg}")
+                .unwrap()
+                .progress_chars("##-"),
+        );
+        Some(bar)
+    };
     files.par_iter().for_each(|path| {
         let res = process_file(path, args.verbose, random_source, args.dry_run);
-        let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
 
         if let Err(e) = res {
             failed.fetch_add(1, Ordering::Relaxed);
             let err_msg = e.to_string();
             if let Ok(mut lock) = errors.lock() {
-                lock.push((path.clone(), err_msg));
+                lock.push((path.clone(), err_msg.clone()));
+            }
+            if let Some(bar) = &pb {
+                bar.println(format!("Failed: {} -> {}", path.display(), err_msg));
             }
         }
 
-        if args.verbose || count.is_multiple_of(500) {
-            eprint!("\rProcessed: {}/{}", count, files.len());
+        if let Some(bar) = &pb {
+            bar.inc(1);
         }
     });
 
-    if args.verbose { eprintln!(); }
-
-    let success = processed.load(Ordering::Relaxed) - failed.load(Ordering::Relaxed);
+    let success = files.len() - failed.load(Ordering::Relaxed);
     println!("\nSuccessful: {} | Failure: {}", success, failed.load(Ordering::Relaxed));
 
     if failed.load(Ordering::Relaxed) > 0 {
         println!("\nFailed:");
         for (path, err) in errors.lock().unwrap().iter() {
-            println!("  Failed: {}: {}", path.display(), err);
+            println!("  {}: {}", path.display(), err);
         }
         std::process::exit(1);
     }
