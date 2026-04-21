@@ -37,6 +37,11 @@ jobs:
         run: |
           rustup toolchain install
           rustup target add ${{ matrix.target }}
+
+      - name: Setup zigbuild for windows
+        if: matrix.os == 'windows-latest'
+       run: |
+          winget install -e --id zig.zig --silent --accept-package-agreements --accept-source-agreements
           cargo install cargo-zigbuild
 
       - name: Cache
