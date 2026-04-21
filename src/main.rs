@@ -122,6 +122,10 @@ fn main() -> Result<()> {
         }
     });
 
+    if let Some(bar) = &pb {
+        bar.finish();
+    }
+
     let success = files.len() - failed.load(Ordering::Relaxed);
     println!("\nSuccessful: {} | Failure: {}", success, failed.load(Ordering::Relaxed));
 
