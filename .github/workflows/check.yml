@@ -17,7 +17,7 @@ jobs:
         include:
           - name: Windows
             os: windows-latest
-            target: x86_64-pc-windows-msvc
+            target: x86_64-pc-windows-gnullvm
           - name: Linux
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu

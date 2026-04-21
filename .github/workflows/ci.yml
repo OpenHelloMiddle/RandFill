@@ -17,7 +17,7 @@ jobs:
         include:
           - name: Windows
             os: windows-latest
-            target: x86_64-pc-windows-msvc
+            target: x86_64-pc-windows-gnullvm
             arch: x86_64
           - name: Linux
             os: ubuntu-latest
@@ -30,11 +30,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: matrix.os == 'windows-latest'
       - name: Setup Rust toolchain
         run: |
           rustup toolchain install
+          rustup target add ${{ matrix.target }}
+          cargo install cargo-zigbuild
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
@@ -44,7 +44,7 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release --all-targets --all-features --workspace --target ${{ matrix.target }}
+          cargo zigbuild --release --all-targets --all-features --workspace --target ${{ matrix.target }}
 
       - name: Upload release
         uses: actions/upload-artifact@v7
