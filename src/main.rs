@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2026 OpenHelloMiddle Contributors
- * SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  */
 use clap::Parser;
 use anyhow::{Context, Result};
